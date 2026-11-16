@@ -32,6 +32,12 @@ const (
 	CodePairingTimeout      = "pairing_timeout"
 	CodeBadPhone            = "bad_phone"
 	CodePairingFailed       = "pairing_failed"
+	CodeUnlinked            = "unlinked"
+	CodePhoneGone           = "phone_gone"
+	CodeBanned              = "banned"
+	CodeTemporaryBan        = "temporary_ban"
+	CodeReplaced            = "replaced"
+	CodeClientOutdated      = "client_outdated"
 	CodeInternal            = "internal"
 )
 

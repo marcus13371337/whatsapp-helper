@@ -120,3 +120,16 @@ func TestTheIndexTravelsInsideTheSession(t *testing.T) {
 		t.Fatalf("restored id %q, page %+v", id, page)
 	}
 }
+
+func TestAMessageInTheSameSecondAsAReadStillCountsAsUnread(t *testing.T) {
+	ctx := context.Background()
+	_, idx := openTestIndex(t, "")
+	idx.note(ctx, chatNote{id: adaPhone.String(), kind: helper.KindDirect, at: testEpoch, unread: true})
+	idx.markRead(ctx, adaPhone.String(), testEpoch.Add(400*time.Millisecond))
+
+	row, _ := idx.note(ctx, chatNote{id: adaPhone.String(), kind: helper.KindDirect, at: testEpoch, unread: true})
+
+	if !row.unread {
+		t.Fatalf("row %+v", row)
+	}
+}

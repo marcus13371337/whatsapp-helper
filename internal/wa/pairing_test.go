@@ -100,3 +100,18 @@ func TestANumberWhatsAppRefusesForLinkingIsABadPhone(t *testing.T) {
 		t.Fatalf("other error became %q", got)
 	}
 }
+
+func TestLinkingByCodeWaitsUntilWhatsAppIsReadyToHandOutACode(t *testing.T) {
+	ready := make(chan whatsmeow.QRChannelItem, 1)
+	ready <- whatsmeow.QRChannelItem{Event: whatsmeow.QRChannelEventCode, Code: "2@qr"}
+
+	if err := awaitFirstCode(context.Background(), ready); err != nil {
+		t.Fatalf("ready: %v", err)
+	}
+	if err := awaitFirstCode(context.Background(), feed(whatsmeow.QRChannelClientOutdated)); pairingCode(err) != "client_outdated" {
+		t.Fatalf("outdated: %v", err)
+	}
+	if err := awaitFirstCode(context.Background(), feed()); pairingCode(err) != helper.CodePairingTimeout {
+		t.Fatalf("closed: %v", err)
+	}
+}

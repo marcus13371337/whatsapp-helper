@@ -158,6 +158,17 @@ func TestAttachmentIsDownloadedIntoTheHelpersFolder(t *testing.T) {
 	}
 }
 
+func TestANamelessAttachmentGetsTheUsualExtensionForItsType(t *testing.T) {
+	a := startHelper(t)
+	a.login()
+
+	got := a.ok("attachment", map[string]any{"ref": "ref-voice-note"})
+
+	if got["name"] != "file.ogg" || filepath.Ext(got["path"].(string)) != ".ogg" {
+		t.Fatalf("answer %v", got)
+	}
+}
+
 func TestAttachmentNameFromTheAppCannotEscapeTheFolder(t *testing.T) {
 	a := startHelper(t)
 	a.login()

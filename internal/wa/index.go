@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -30,6 +31,7 @@ CREATE INDEX IF NOT EXISTS helper_conversations_by_activity ON helper_conversati
 `
 
 type index struct {
+	mu  sync.Mutex
 	db  *sql.DB
 	log zerolog.Logger
 }
@@ -64,6 +66,8 @@ func openIndex(ctx context.Context, db *sql.DB, log zerolog.Logger) (*index, err
 }
 
 func (x *index) pin(ctx context.Context, addresses ...types.JID) (string, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
 	var known []string
 	for _, address := range addresses {
 		if !address.IsEmpty() {
@@ -139,6 +143,8 @@ func (x *index) put(ctx context.Context, row chatRow) bool {
 }
 
 func (x *index) note(ctx context.Context, n chatNote) (chatRow, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
 	row, exists := x.get(ctx, n.id)
 	before := row
 	if !exists {
@@ -150,7 +156,7 @@ func (x *index) note(ctx context.Context, n chatNote) (chatRow, bool) {
 	if n.at.After(row.lastActivity) {
 		row.lastActivity = n.at.Truncate(time.Millisecond).UTC()
 	}
-	if n.unread && n.at.After(row.lastRead) {
+	if n.unread && !n.at.Truncate(time.Second).Before(row.lastRead.Truncate(time.Second)) {
 		row.unread = true
 	}
 	if exists && row == before {
@@ -160,6 +166,8 @@ func (x *index) note(ctx context.Context, n chatNote) (chatRow, bool) {
 }
 
 func (x *index) markRead(ctx context.Context, id string, at time.Time) (chatRow, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
 	row, exists := x.get(ctx, id)
 	if !exists {
 		return row, false

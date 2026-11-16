@@ -56,7 +56,7 @@ func newFakeWhatsApp() *fakeWhatsApp {
 	friend := helper.User{ID: fakeFriendID, Name: "Ada", Phone: "+46700000002"}
 	return &fakeWhatsApp{
 		sentFiles: map[string][]byte{},
-		files:     map[string][]byte{"ref-photo": []byte("\x89PNG\r\n\x1a\npixels")},
+		files:     map[string][]byte{"ref-photo": []byte("\x89PNG\r\n\x1a\npixels"), "ref-voice-note": []byte("OggS")},
 		conversations: []helper.Conversation{
 			{ID: directChatID, Name: "Ada", Kind: helper.KindDirect, Encrypted: true, Phone: friend.Phone, Participants: []helper.User{friend}, LastActivityAt: helper.Time(fakeEpoch.Add(time.Hour))},
 			{ID: groupChatID, Name: "Book club", Kind: helper.KindGroup, Encrypted: true, Participants: []helper.User{friend}, LastActivityAt: helper.Time(fakeEpoch)},
@@ -197,6 +197,9 @@ func (f *fakeWhatsApp) Download(_ context.Context, ref string, into io.Writer) (
 		return helper.Downloaded{}, helper.Errorf(helper.CodeNotAvailable, "WhatsApp no longer has this attachment.")
 	}
 	_, err := into.Write(content)
+	if ref == "ref-voice-note" {
+		return helper.Downloaded{Type: "audio/ogg; codecs=opus"}, err
+	}
 	return helper.Downloaded{Name: "photo.png"}, err
 }
 

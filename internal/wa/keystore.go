@@ -99,6 +99,12 @@ func (ks *keyStore) snapshot(ctx context.Context) (string, error) {
 	return base64.StdEncoding.EncodeToString(packed.Bytes()), nil
 }
 
+func (ks *keyStore) changes(ctx context.Context) (int64, error) {
+	var total int64
+	err := ks.db.QueryRowContext(ctx, `SELECT total_changes()`).Scan(&total)
+	return total, err
+}
+
 func (ks *keyStore) device(ctx context.Context) (*store.Device, error) {
 	return ks.container.GetFirstDevice(ctx)
 }

@@ -2,6 +2,7 @@ package wa
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -102,6 +103,7 @@ func TestTheLinkingHistoryArrivesAsMessagesAndFillsTheConversationList(t *testin
 	c, h := openTestClient(t, "")
 
 	c.handle(linkingHistory())
+	c.background.Wait()
 
 	var texts []string
 	for _, evt := range h.take("message") {
@@ -141,7 +143,7 @@ func TestANewMessageMarksTheChatUnreadAndReadingElsewhereClearsIt(t *testing.T) 
 		t.Fatalf("conversation %+v", got)
 	}
 
-	c.handle(&events.Receipt{MessageSource: types.MessageSource{Chat: adaPhone, Sender: selfPhone, IsFromMe: true}, MessageIDs: []types.MessageID{"A1"}, Timestamp: testEpoch, Type: types.ReceiptTypeReadSelf})
+	c.handle(&events.Receipt{MessageSource: types.MessageSource{Chat: adaPhone, Sender: selfPhone, IsFromMe: true}, MessageIDs: []types.MessageID{"A1"}, Timestamp: testEpoch, Type: types.ReceiptTypeRead})
 
 	read := h.take("read")
 	if len(read) != 1 || read[0].Params.(helper.Read).ReaderID != selfPhone.String() {
@@ -221,5 +223,48 @@ func TestTheSessionHandedBackRestoresTheDeviceAndTheConversations(t *testing.T) 
 	page, _ := restored.Conversations(context.Background(), helper.ConversationsQuery{Limit: 10})
 	if restored.device.ID == nil || restored.device.ID.User != selfPhone.User || len(page.Conversations) != 2 {
 		t.Fatalf("restored device %v, conversations %+v", restored.device.ID, page)
+	}
+}
+
+func TestAReconnectThatFailsIsTriedAgainUntilItWorks(t *testing.T) {
+	c, _ := openTestClient(t, "")
+	c.firstRetry = time.Millisecond
+	attempts := make(chan int, 10)
+	tries := 0
+	c.reconnect = func(context.Context) error {
+		tries++
+		attempts <- tries
+		if tries < 3 {
+			return errors.New("network down")
+		}
+		return nil
+	}
+
+	c.handle(&events.ConnectFailure{Reason: events.ConnectFailureServiceUnavailable})
+
+	for got := range attempts {
+		if got == 3 {
+			break
+		}
+	}
+	c.background.Wait()
+	if tries != 3 {
+		t.Fatalf("tried %d times", tries)
+	}
+}
+
+func TestAnyChangeToTheStoreIsHandedBackEvenWithoutAnEvent(t *testing.T) {
+	c, h := openTestClient(t, "")
+	c.emitSession(false)
+	h.take("session")
+
+	c.emitSession(false)
+	quiet := h.take("session")
+	c.idx.markRead(context.Background(), adaPhone.String(), testEpoch)
+	c.idx.note(context.Background(), chatNote{id: adaPhone.String(), kind: helper.KindDirect, at: testEpoch})
+	c.emitSession(false)
+
+	if len(quiet) != 0 || len(h.take("session")) != 1 {
+		t.Fatalf("quiet %d", len(quiet))
 	}
 }

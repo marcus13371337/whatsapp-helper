@@ -95,10 +95,33 @@ func safeName(name, contentType string) string {
 		name = ""
 	}
 	if name == "" {
-		name = "file"
-		if extensions, _ := mime.ExtensionsByType(contentType); len(extensions) > 0 {
-			name += extensions[0]
-		}
+		name = "file" + extensionFor(contentType)
 	}
 	return name
+}
+
+var preferredExtensions = map[string]string{
+	"image/jpeg":      ".jpg",
+	"image/png":       ".png",
+	"image/webp":      ".webp",
+	"image/gif":       ".gif",
+	"video/mp4":       ".mp4",
+	"video/3gpp":      ".3gp",
+	"audio/ogg":       ".ogg",
+	"audio/mpeg":      ".mp3",
+	"audio/mp4":       ".m4a",
+	"audio/aac":       ".aac",
+	"application/pdf": ".pdf",
+}
+
+func extensionFor(contentType string) string {
+	base, _, _ := strings.Cut(contentType, ";")
+	base = strings.TrimSpace(base)
+	if extension, ok := preferredExtensions[base]; ok {
+		return extension
+	}
+	if extensions, _ := mime.ExtensionsByType(base); len(extensions) > 0 {
+		return extensions[0]
+	}
+	return ""
 }

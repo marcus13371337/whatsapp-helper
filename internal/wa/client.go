@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -45,8 +44,14 @@ type Client struct {
 	wa     *whatsmeow.Client
 	now    func() time.Time
 
+	reconnect  func(ctx context.Context) error
+	firstRetry time.Duration
+
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	unread *pendingReads
+	groups *groupBook
 
 	mu           sync.Mutex
 	published    helper.State
@@ -54,20 +59,12 @@ type Client struct {
 	ended        bool
 	stopped      bool
 	retrying     bool
-	retryIn      time.Duration
 	firstOutcome chan *helper.State
-	lastSession  [sha256.Size]byte
-	unread       map[string][]pendingRead
-	groups       map[types.JID]*types.GroupInfo
 
-	sessionDirty atomic.Bool
-	background   sync.WaitGroup
-}
-
-type pendingRead struct {
-	sender types.JID
-	id     types.MessageID
-	at     time.Time
+	sessionMu   sync.Mutex
+	lastChanges int64
+	lastSession [sha256.Size]byte
+	background  sync.WaitGroup
 }
 
 func Connector(logOut io.Writer) helper.Connect {
@@ -105,14 +102,19 @@ func newClient(ctx context.Context, log zerolog.Logger, state string, emit func(
 		device:       device,
 		now:          time.Now,
 		firstOutcome: make(chan *helper.State, 1),
-		unread:       map[string][]pendingRead{},
-		groups:       map[types.JID]*types.GroupInfo{},
+		unread:       newPendingReads(),
+		lastChanges:  -1,
+		firstRetry:   firstRetry,
 	}
 	c.people = &people{device: device, idx: idx}
 	c.inbox = &inbox{people: c.people, self: c.selfJID}
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	c.wa = whatsmeow.NewClient(device, waLog.Zerolog(log.With().Str("component", "whatsmeow").Logger().Level(zerolog.WarnLevel)))
 	c.wa.AddEventHandler(c.handle)
+	c.reconnect = c.wa.ConnectContext
+	c.groups = newGroupBook(c.wa.GetJoinedGroups, func(ctx context.Context, group types.JID) (*types.GroupInfo, error) {
+		return c.wa.GetGroupInfo(ctx, group)
+	})
 	return c, nil
 }
 
@@ -132,7 +134,8 @@ func connect(ctx context.Context, logOut io.Writer, login helper.Login, emit fun
 		err = c.logIn(ctx)
 	}
 	if err != nil {
-		c.shutDown()
+		c.stop()
+		c.shutDown(false)
 		return nil, err
 	}
 	c.background.Go(c.flushSessions)
@@ -174,6 +177,9 @@ func (c *Client) link(ctx context.Context, pair helper.Pair, deviceName string) 
 		return errUnreachable
 	}
 	if pair.Method == helper.PairByCode {
+		if err := awaitFirstCode(ctx, items); err != nil {
+			return err
+		}
 		code, err := c.wa.PairPhone(ctx, pair.Phone, true, whatsmeow.PairClientChrome, codeLinkPlatform)
 		if err != nil {
 			c.log.Error().Err(err).Msg("WhatsApp did not hand out a linking code")
@@ -184,7 +190,6 @@ func (c *Client) link(ctx context.Context, pair helper.Pair, deviceName string) 
 	if err := followPairing(ctx, items, pair.Method == helper.PairByQR, c.now, c.emit); err != nil {
 		return err
 	}
-	c.sessionDirty.Store(true)
 	c.publish(helper.State{State: helper.StateConnecting})
 	return nil
 }
@@ -214,7 +219,6 @@ func (c *Client) publish(state helper.State) {
 	}
 	if state.State == helper.StateConnected {
 		c.wasConnected = true
-		c.retryIn = 0
 	}
 	if state.State == helper.StateReconnecting && !c.wasConnected {
 		state.State = helper.StateConnecting
@@ -238,7 +242,6 @@ func (c *Client) settle(outcome *helper.State) {
 }
 
 func (c *Client) handle(raw any) {
-	c.sessionDirty.Store(true)
 	ctx := c.ctx
 	if state, final := ending(raw, c.now()); final {
 		c.log.Warn().Str("reason", state.Code).Msg("WhatsApp ended the link")
@@ -264,14 +267,26 @@ func (c *Client) handle(raw any) {
 	case *events.Receipt:
 		c.receipt(ctx, evt)
 	case *events.GroupInfo:
+		c.groups.changed(evt.JID)
+		note := chatNote{id: evt.JID.String(), kind: helper.KindGroup}
 		if evt.Name != nil {
-			c.forgetGroup(evt.JID)
-			c.noteChat(ctx, chatNote{id: evt.JID.String(), kind: helper.KindGroup, name: evt.Name.Name})
+			note.name = evt.Name.Name
 		}
+		c.noteChat(ctx, note)
 	case *events.JoinedGroup:
-		c.rememberGroup(&evt.GroupInfo)
+		c.groups.remember(&evt.GroupInfo)
 		c.noteChat(ctx, chatNote{id: evt.JID.String(), kind: helper.KindGroup, name: evt.Name, at: evt.GroupCreated})
 	}
+}
+
+func (c *Client) spawn(work func()) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopped {
+		return false
+	}
+	c.background.Go(work)
+	return true
 }
 
 func (c *Client) retryLater() {
@@ -281,25 +296,26 @@ func (c *Client) retryLater() {
 		return
 	}
 	c.retrying = true
-	c.retryIn = min(max(c.retryIn*2, firstRetry), maxRetry)
-	wait := c.retryIn
-	c.mu.Unlock()
 	c.background.Go(func() {
 		defer func() {
 			c.mu.Lock()
 			c.retrying = false
 			c.mu.Unlock()
 		}()
-		select {
-		case <-time.After(wait):
-		case <-c.ctx.Done():
-			return
-		}
-		if err := c.wa.ConnectContext(c.ctx); err != nil {
+		for wait := c.firstRetry; ; wait = min(wait*2, maxRetry) {
+			select {
+			case <-time.After(wait):
+			case <-c.ctx.Done():
+				return
+			}
+			err := c.reconnect(c.ctx)
+			if err == nil {
+				return
+			}
 			c.log.Warn().Err(err).Msg("Could not reconnect to WhatsApp")
-			c.retryLater()
 		}
 	})
+	c.mu.Unlock()
 }
 
 func (c *Client) received(ctx context.Context, evt *events.Message, history bool) {
@@ -313,7 +329,7 @@ func (c *Client) received(ctx context.Context, evt *events.Message, history bool
 	}
 	c.noteChat(ctx, got.chat)
 	if got.chat.unread {
-		c.rememberUnread(got.chat.id, evt.Info)
+		c.unread.remember(got.chat.id, evt.Info)
 	}
 	c.emit(helper.MessageEvent(*got.message))
 }
@@ -350,7 +366,7 @@ func (c *Client) receipt(ctx context.Context, evt *events.Receipt) {
 		return
 	}
 	conversationID := c.inbox.chatID(ctx, evt.Chat)
-	if evt.Type == types.ReceiptTypeReadSelf {
+	if evt.IsFromMe {
 		c.readUpTo(ctx, conversationID, evt.Timestamp)
 	}
 	c.emit(helper.ReadEvent(helper.Read{
@@ -361,40 +377,39 @@ func (c *Client) receipt(ctx context.Context, evt *events.Receipt) {
 }
 
 func (c *Client) noteChat(ctx context.Context, note chatNote) {
-	row, changed := c.idx.note(ctx, note)
-	if changed {
-		c.emit(helper.ConversationEvent(c.conversation(ctx, row, false)))
+	if row, changed := c.idx.note(ctx, note); changed {
+		c.announce(ctx, row)
 	}
+}
+
+func (c *Client) announce(ctx context.Context, row chatRow) {
+	address, err := c.chatAddress(ctx, row.id)
+	if err != nil || address.Server != types.GroupServer {
+		c.emit(helper.ConversationEvent(c.conversation(ctx, row, nil)))
+		return
+	}
+	if info, known := c.groups.known(address); known {
+		c.emit(helper.ConversationEvent(c.conversation(ctx, row, info)))
+		return
+	}
+	c.spawn(func() {
+		info, err := c.groups.get(c.ctx, address)
+		if err != nil {
+			c.log.Warn().Err(err).Msg("Could not look up a group")
+		}
+		if current, ok := c.idx.get(c.ctx, row.id); ok {
+			row = current
+		}
+		c.emit(helper.ConversationEvent(c.conversation(c.ctx, row, info)))
+	})
 }
 
 func (c *Client) readUpTo(ctx context.Context, conversationID string, at time.Time) []pendingRead {
-	c.mu.Lock()
-	var read, left []pendingRead
-	for _, pending := range c.unread[conversationID] {
-		if pending.at.After(at) {
-			left = append(left, pending)
-		} else {
-			read = append(read, pending)
-		}
-	}
-	c.unread[conversationID] = left
-	c.mu.Unlock()
+	read := c.unread.takeUpTo(conversationID, at)
 	if row, changed := c.idx.markRead(ctx, conversationID, at); changed {
-		c.emit(helper.ConversationEvent(c.conversation(ctx, row, false)))
+		c.announce(ctx, row)
 	}
 	return read
-}
-
-func (c *Client) putBackUnread(conversationID string, read []pendingRead) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.unread[conversationID] = append(read, c.unread[conversationID]...)
-}
-
-func (c *Client) rememberUnread(conversationID string, info types.MessageInfo) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.unread[conversationID] = append(c.unread[conversationID], pendingRead{sender: info.Sender, id: info.ID, at: info.Timestamp})
 }
 
 func (c *Client) flushSessions() {
@@ -403,9 +418,7 @@ func (c *Client) flushSessions() {
 	for {
 		select {
 		case <-ticker.C:
-			if c.sessionDirty.Swap(false) {
-				c.emitSession(false)
-			}
+			c.emitSession(false)
 		case <-c.ctx.Done():
 			return
 		}
@@ -415,18 +428,27 @@ func (c *Client) flushSessions() {
 func (c *Client) emitSession(always bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	changes, err := c.keys.changes(ctx)
+	if err != nil {
+		c.log.Error().Err(err).Msg("Could not check the session for changes")
+		return
+	}
+	if changes == c.lastChanges && !always {
+		return
+	}
 	state, err := c.keys.snapshot(ctx)
 	if err != nil {
 		c.log.Error().Err(err).Msg("Could not pack the session")
 		return
 	}
+	c.lastChanges = changes
 	session := helper.Session{Device: state}
 	raw, _ := json.Marshal(session)
 	sum := sha256.Sum256(raw)
-	c.mu.Lock()
 	unchanged := sum == c.lastSession
 	c.lastSession = sum
-	c.mu.Unlock()
 	if always || !unchanged {
 		c.emit(helper.SessionEvent(session))
 	}
@@ -440,23 +462,20 @@ func (c *Client) stop() bool {
 	return already
 }
 
-func (c *Client) shutDown() {
-	c.stop()
+func (c *Client) shutDown(handBackSession bool) {
 	c.cancel()
 	c.wa.Disconnect()
 	c.background.Wait()
+	if handBackSession {
+		c.emitSession(true)
+	}
 	c.keys.close()
 }
 
 func (c *Client) Close(context.Context) error {
-	if c.stop() {
-		return nil
+	if !c.stop() {
+		c.shutDown(true)
 	}
-	c.cancel()
-	c.wa.Disconnect()
-	c.background.Wait()
-	c.emitSession(true)
-	c.keys.close()
 	return nil
 }
 
@@ -471,6 +490,8 @@ func (c *Client) Logout(ctx context.Context) error {
 		}
 	}
 	c.publish(helper.State{State: helper.StateLoggedOut})
-	c.shutDown()
+	if !c.stop() {
+		c.shutDown(false)
+	}
 	return nil
 }
