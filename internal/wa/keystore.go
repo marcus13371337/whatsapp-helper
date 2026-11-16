@@ -27,15 +27,15 @@ type sqliteImage interface {
 	Deserialize([]byte) error
 }
 
-func openKeyStore(ctx context.Context, encryption string, log zerolog.Logger) (*keyStore, error) {
+func openKeyStore(ctx context.Context, state string, log zerolog.Logger) (*keyStore, error) {
 	db, err := sql.Open("sqlite", "file::memory:?_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	ks := &keyStore{db: db}
-	if encryption != "" {
-		if err := ks.restore(ctx, encryption); err != nil {
+	if state != "" {
+		if err := ks.restore(ctx, state); err != nil {
 			db.Close()
 			return nil, err
 		}
@@ -63,18 +63,18 @@ func (ks *keyStore) withImage(ctx context.Context, fn func(sqliteImage) error) e
 	})
 }
 
-func (ks *keyStore) restore(ctx context.Context, encryption string) error {
-	packed, err := base64.StdEncoding.DecodeString(encryption)
+func (ks *keyStore) restore(ctx context.Context, state string) error {
+	packed, err := base64.StdEncoding.DecodeString(state)
 	if err != nil {
-		return fmt.Errorf("decode encryption state: %w", err)
+		return fmt.Errorf("decode device state: %w", err)
 	}
 	unpacker, err := gzip.NewReader(bytes.NewReader(packed))
 	if err != nil {
-		return fmt.Errorf("unpack encryption state: %w", err)
+		return fmt.Errorf("unpack device state: %w", err)
 	}
 	image, err := io.ReadAll(unpacker)
 	if err != nil {
-		return fmt.Errorf("unpack encryption state: %w", err)
+		return fmt.Errorf("unpack device state: %w", err)
 	}
 	return ks.withImage(ctx, func(db sqliteImage) error { return db.Deserialize(image) })
 }

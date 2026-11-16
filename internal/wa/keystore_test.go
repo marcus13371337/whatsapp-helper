@@ -19,18 +19,18 @@ func TestKeyStoreSurvivesBeingHandedToTheAppAndBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	device.ID = &types.JID{User: "100001", Device: 7, Server: types.MessengerServer}
+	device.ID = &types.JID{User: "46700000001", Device: 7, Server: types.DefaultUserServer}
 	device.Account = &waAdv.ADVSignedDeviceIdentity{Details: []byte{}, AccountSignatureKey: make([]byte, 32), AccountSignature: make([]byte, 64), DeviceSignature: make([]byte, 64)}
 	if err := device.Save(ctx); err != nil {
 		t.Fatal(err)
 	}
-	encryption, err := first.snapshot(ctx)
+	state, err := first.snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	first.close()
 
-	second, err := openKeyStore(ctx, encryption, zerolog.Nop())
+	second, err := openKeyStore(ctx, state, zerolog.Nop())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,6 +60,6 @@ func TestKeyStoreStartsWithAnUnregisteredDevice(t *testing.T) {
 
 func TestKeyStoreRefusesGarbage(t *testing.T) {
 	if _, err := openKeyStore(context.Background(), "bm90IGEgZGF0YWJhc2U=", zerolog.Nop()); err == nil {
-		t.Fatal("garbage encryption state was accepted")
+		t.Fatal("garbage state state was accepted")
 	}
 }
