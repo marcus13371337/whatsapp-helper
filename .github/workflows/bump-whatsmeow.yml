@@ -1,0 +1,42 @@
+name: bump whatsmeow
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency: bump-whatsmeow
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: auto
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - id: bump
+        run: |
+          version="$(scripts/bump-whatsmeow.sh)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git diff --quiet; then echo changed=false; else echo changed=true; fi >> "$GITHUB_OUTPUT"
+      - id: check
+        if: steps.bump.outputs.changed == 'true'
+        continue-on-error: true
+        run: scripts/check.sh
+      - if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          PASSED: ${{ steps.check.outcome == 'success' }}
+          BASE: ${{ github.event.repository.default_branch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/open-bump-pr.sh "$VERSION" "$PASSED" "$BASE" "$RUN_URL"
+      - if: steps.check.outcome == 'failure'
+        run: exit 1
