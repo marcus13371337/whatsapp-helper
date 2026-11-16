@@ -74,7 +74,9 @@ WhatsApp changes its protocol often and refuses an outdated client with `client_
 
 The workflow opens the PR with the repository's own token, which needs Settings, Actions, General, "Allow GitHub Actions to create and approve pull requests".
 
-The tests run against a fake WhatsApp, so a green bump only says the code still fits. Before merging, check whatsmeow's `go.mod` at the new commit for `replace` lines, which Go does not apply to the helper, and copy any into ours. Then try the PR's build with a secondary number as in "Trying it with a real number" above: link, list conversations, send a message and receive one.
+The tests run against a fake WhatsApp, so a green bump only says the code still fits. Before merging, check whatsmeow's `go.mod` at the new commit for `replace` lines, which Go does not apply to the helper, and copy any into ours. Then try the PR's build with a secondary number through the list in "Trying it with a real number" above.
+
+A fix for a failing bump goes on `bump/whatsmeow` itself. Once a commit not made by the workflow is on it, later runs leave the branch alone and only comment on the PR when whatsmeow has moved on.
 
 Then merge, and release from `main` with the next patch version:
 

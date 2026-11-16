@@ -9,6 +9,8 @@ base="${3:?$usage}"
 run_url="${4:?$usage}"
 branch=bump/whatsmeow
 module=go.mau.fi/whatsmeow
+bot_email="41898282+github-actions[bot]@users.noreply.github.com"
+title="chore: bump whatsmeow to $version"
 
 pr="$(gh pr list --head "$branch" --state open --json number,isDraft --jq '.[0] // empty | "\(.number) \(.isDraft)"')"
 if [ -n "$pr" ]; then
@@ -20,15 +22,18 @@ if [ -n "$pr" ]; then
     echo "PR #${pr%% *} already bumps to $version"
     exit 0
   fi
+  if gh pr view "${pr%% *}" --json commits --jq '.commits[].authors[].email' | grep -qvxF "$bot_email"; then
+    gh pr comment "${pr%% *}" --body "whatsmeow has a newer commit, $version. This PR has commits pushed by hand, so the bump leaves its branch alone: merge or close it, and the next run bumps again."
+    exit 0
+  fi
 fi
 
 git config user.name "github-actions[bot]"
-git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git config user.email "$bot_email"
 git switch -c "$branch"
-git commit -am "chore: bump whatsmeow to $version"
+git commit -am "$title"
 git push --force origin "$branch"
 
-title="chore: bump whatsmeow to $version"
 if [ "$passed" = true ]; then
   result="The build and tests passed in [the bump run]($run_url)."
 else

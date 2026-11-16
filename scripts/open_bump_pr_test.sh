@@ -16,6 +16,7 @@ STUB
 cat > "$dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1 $2" = "pr list" ]; then echo "$FAKE_PR"; exit; fi
+if [ "$1 $2" = "pr view" ]; then echo "$FAKE_AUTHORS"; exit; fi
 echo "gh $*" >> "$LOG"
 STUB
 chmod +x "$dir/bin/git" "$dir/bin/gh"
@@ -23,10 +24,12 @@ chmod +x "$dir/bin/git" "$dir/bin/gh"
 new=v0.0.0-20261116172437-19d61352436f
 old=v0.0.0-20261116124925-2ecca2c913b9
 
+bot="41898282+github-actions[bot]@users.noreply.github.com"
+
 run() {
-  local passed="$1" pr="$2" branch_version="$3"
+  local passed="$1" pr="$2" branch_version="$3" authors="${4:-$bot}"
   : > "$dir/log"
-  PATH="$dir/bin:$PATH" LOG="$dir/log" FAKE_PR="$pr" FAKE_BRANCH_VERSION="$branch_version" \
+  PATH="$dir/bin:$PATH" LOG="$dir/log" FAKE_PR="$pr" FAKE_BRANCH_VERSION="$branch_version" FAKE_AUTHORS="$authors" \
     scripts/open-bump-pr.sh "$new" "$passed" main https://example.com/run > /dev/null
 }
 
@@ -61,5 +64,12 @@ expect "ready PR, newer commit fails" "gh pr ready --undo"
 run false "7 true" "$new"
 expect_not "PR already on this commit" "git push"
 expect_not "PR already on this commit" "gh pr"
+
+run false "7 true" "$old" "$bot
+someone@example.com"
+expect_not "PR with a hand-pushed fix" "git push"
+expect_not "PR with a hand-pushed fix" "gh pr edit"
+expect "PR with a hand-pushed fix" "gh pr comment 7"
+expect "PR with a hand-pushed fix" "$new"
 
 echo "open bump pr ok"
