@@ -1,26 +1,23 @@
 package wa
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
+	"regexp"
 	"sync"
 )
 
-var loggedFields = []string{"level", "time", "message", "component", "socket", "error", "reason", "failed_messages", "failed_tasks"}
+var loggedFields = []string{"level", "time", "message", "component", "error", "reason"}
+
+var addressOrNumber = regexp.MustCompile(`[0-9A-Za-z.:_-]*@(s\.whatsapp\.net|lid|g\.us|broadcast|newsletter|c\.us)|\+?[0-9]{6,}`)
 
 type quietLog struct {
-	mu      sync.Mutex
-	out     io.Writer
-	secrets func() []string
-}
-
-func newQuietLog(out io.Writer, secrets func() []string) *quietLog {
-	return &quietLog{out: out, secrets: secrets}
+	mu  sync.Mutex
+	out io.Writer
 }
 
 func QuietLog(out io.Writer) io.Writer {
-	return newQuietLog(out, func() []string { return nil })
+	return &quietLog{out: out}
 }
 
 func (q *quietLog) Write(line []byte) (int, error) {
@@ -38,11 +35,7 @@ func (q *quietLog) Write(line []byte) (int, error) {
 	if err != nil {
 		return len(line), nil
 	}
-	for _, secret := range q.secrets() {
-		if len(secret) >= 6 {
-			safe = bytes.ReplaceAll(safe, []byte(secret), []byte("[hidden]"))
-		}
-	}
+	safe = addressOrNumber.ReplaceAll(safe, []byte("[hidden]"))
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if _, err := q.out.Write(append(safe, '\n')); err != nil {
