@@ -57,7 +57,7 @@ go test ./...
 
 The tests run against a fake WhatsApp and never link an account. The code that talks to the real WhatsApp lives in `internal/wa` and can only be tried by hand with a real number, see "Running it by hand" in [PROTOCOL.md](PROTOCOL.md).
 
-`scripts/check.sh` runs everything CI runs: gofmt, vet, the tests with the race detector, and the release build.
+`scripts/check.sh` runs everything CI runs: gofmt, vet, the tests with the race detector, the release build, and the tests of the whatsmeow bump.
 
 ## Trying it with a real number
 
@@ -67,6 +67,24 @@ Use a secondary number. `go run . --state-dir /tmp/wh` as in "Running it by hand
 - list conversations and see the linking history arrive
 - send a message, and receive one sent from the phone
 - remove the device on the phone and see `state` `logged_out` with `code` `unlinked`
+
+## Following whatsmeow
+
+WhatsApp changes its protocol often and refuses an outdated client with `client_outdated`. whatsmeow follows within days but has no tagged releases, so every Monday a workflow runs `scripts/bump-whatsmeow.sh`. It moves `go.mau.fi/whatsmeow` to the newest commit on its `main`, runs `scripts/check.sh` and opens or updates a PR from `bump/whatsmeow`. When the checks fail the PR is a draft and the run is red. It can also be started by hand from the Actions tab, and `scripts/bump-whatsmeow.sh <commit>` moves to a given commit locally.
+
+The workflow opens the PR with the repository's own token, which needs Settings, Actions, General, "Allow GitHub Actions to create and approve pull requests".
+
+The tests run against a fake WhatsApp, so a green bump only says the code still fits. Before merging, check whatsmeow's `go.mod` at the new commit for `replace` lines, which Go does not apply to the helper, and copy any into ours. Then try the PR's build with a secondary number through the list in "Trying it with a real number" above.
+
+A fix for a failing bump goes on `bump/whatsmeow` itself. Once a commit not made by the workflow is on it, later runs leave the branch alone and only comment on the PR when whatsmeow has moved on.
+
+Then merge, and release from `main` with the next patch version:
+
+```
+git switch main && git pull
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
 
 ## Licence
 
