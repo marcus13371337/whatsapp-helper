@@ -10,13 +10,41 @@ The helper shows up on the phone under Settings, Linked devices, like WhatsApp o
 
 ## How it works
 
-- The app starts it as a child process.
+- The app downloads a release for its platform, checks its checksum, and starts it as a child process.
 - They exchange one JSON-RPC message per line, described in [PROTOCOL.md](PROTOCOL.md): the app sends requests (link or log in, list conversations, send, fetch attachments) and the helper answers them and pushes new events (messages, reactions, read receipts).
 - The first time, the person links the helper from the phone by scanning a QR code or typing a code the app shows. The phone then sends recent history, which the helper hands to the app as it arrives. WhatsApp keeps no copy of chats, so the app is the store for every message.
 - The helper keeps the connection to WhatsApp alive and reconnects on its own.
 - The helper keeps nothing on disk unless the app asks: the app gives it the session and stores the refreshed one it hands back, so secrets can live in the OS keychain.
 
+## Downloading a release
+
+Each [release](https://github.com/marcus13371337/whatsapp-helper/releases) is named after its version and has one executable per platform, plus `checksums.txt` with the SHA-256 of each:
+
+| Platform | File |
+| --- | --- |
+| macOS, Apple silicon | `whatsapp-helper-darwin-arm64` |
+| macOS, Intel | `whatsapp-helper-darwin-x64` |
+| Linux, x86-64 | `whatsapp-helper-linux-x64` |
+| Linux, arm64 | `whatsapp-helper-linux-arm64` |
+
+An app pins a version and the checksum of its platform's file, downloads it, refuses it when the SHA-256 differs, makes it executable and starts it. By hand:
+
+```
+version=v0.1.0
+platform=darwin-arm64
+base=https://github.com/marcus13371337/whatsapp-helper/releases/download/$version
+curl -fLO "$base/whatsapp-helper-$platform"
+curl -fLO "$base/checksums.txt"
+shasum -a 256 -c --ignore-missing checksums.txt
+chmod +x "whatsapp-helper-$platform"
+"./whatsapp-helper-$platform" --version
+```
+
 `--version` prints the helper's version and the protocol version it speaks, for example `whatsapp-helper 0.1.0 (protocol 1)`.
+
+The programs are not signed. macOS does not stop a program that an app or `curl` downloaded, but it quarantines one downloaded in a browser; `xattr -d com.apple.quarantine whatsapp-helper-darwin-arm64` lifts that.
+
+Pushing a tag such as `v0.1.0` publishes a release; a tag with a suffix such as `v0.2.0-rc.1` publishes a prerelease. `scripts/release.sh v0.1.0` builds the same files into `dist/` locally.
 
 ## Building
 
@@ -29,7 +57,7 @@ go test ./...
 
 The tests run against a fake WhatsApp and never link an account. The code that talks to the real WhatsApp lives in `internal/wa` and can only be tried by hand with a real number, see "Running it by hand" in [PROTOCOL.md](PROTOCOL.md).
 
-`scripts/check.sh` runs everything CI runs: gofmt, vet, the tests with the race detector, and the static build.
+`scripts/check.sh` runs everything CI runs: gofmt, vet, the tests with the race detector, and the release build.
 
 ## Trying it with a real number
 
