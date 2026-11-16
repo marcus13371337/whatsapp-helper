@@ -6,8 +6,8 @@ tag="${1:?usage: scripts/release.sh <tag, e.g. v0.1.0> [output folder, default d
 out="${2:-dist}"
 version="${tag#v}"
 
-rm -rf "$out"
 mkdir -p "$out"
+rm -f "$out"/whatsapp-helper-* "$out"/checksums.txt
 while read -r platform; do
   goos="${platform%-*}"
   goarch="${platform#*-}"

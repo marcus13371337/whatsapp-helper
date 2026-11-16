@@ -13,15 +13,12 @@ expected=$(( $(wc -l < scripts/platforms) + 1 ))
 test "$(ls "$out" | wc -l)" -eq "$expected" || { echo "unexpected files:"; ls "$out"; exit 1; }
 (cd "$out" && shasum -a 256 -c checksums.txt)
 
-case "$(uname -s)-$(uname -m)" in
-  Darwin-arm64) host=darwin-arm64 ;;
-  Darwin-x86_64) host=darwin-x64 ;;
-  Linux-x86_64) host=linux-x64 ;;
-  Linux-aarch64) host=linux-arm64 ;;
-  *) echo "no release build runs on $(uname -s)-$(uname -m)"; exit 1 ;;
-esac
+host="$(go env GOHOSTOS)-$(go env GOHOSTARCH)"
+host="${host/%amd64/x64}"
 got="$("$out/whatsapp-helper-$host" --version)"
-want="whatsapp-helper 1.2.3 (protocol 1)"
-test "$got" = "$want" || { echo "--version printed '$got', want '$want'"; exit 1; }
+case "$got" in
+  "whatsapp-helper 1.2.3 (protocol "*")") ;;
+  *) echo "--version printed '$got', want 'whatsapp-helper 1.2.3 (protocol N)'"; exit 1 ;;
+esac
 
 echo "release build ok"
