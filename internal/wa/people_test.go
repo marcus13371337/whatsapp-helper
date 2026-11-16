@@ -13,11 +13,17 @@ var selfPhone = types.NewJID("46700000001", types.DefaultUserServer)
 
 func linkedTestDevice(t *testing.T, ks *keyStore) *store.Device {
 	t.Helper()
-	ctx := context.Background()
-	device, err := ks.device(ctx)
+	device, err := ks.device(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	linkTestDevice(t, device)
+	return device
+}
+
+func linkTestDevice(t *testing.T, device *store.Device) {
+	t.Helper()
+	ctx := context.Background()
 	id := types.JID{User: selfPhone.User, Device: 7, Server: types.DefaultUserServer}
 	device.ID = &id
 	device.PushName = "Marcus"
@@ -25,7 +31,6 @@ func linkedTestDevice(t *testing.T, ks *keyStore) *store.Device {
 	if err := device.Save(ctx); err != nil {
 		t.Fatal(err)
 	}
-	return device
 }
 
 func openTestPeople(t *testing.T) *people {

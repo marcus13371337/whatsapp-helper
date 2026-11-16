@@ -109,8 +109,9 @@ func (c *Client) MarkRead(ctx context.Context, r helper.ReadMark) error {
 	if r.ReadAt != nil {
 		at = time.Time(*r.ReadAt)
 	}
+	read := c.readUpTo(ctx, r.ConversationID, at)
 	bySender := map[types.JID][]types.MessageID{}
-	for _, pending := range c.readUpTo(ctx, r.ConversationID, at) {
+	for _, pending := range read {
 		var sender types.JID
 		if chat.Server == types.GroupServer {
 			sender = pending.sender
@@ -120,6 +121,7 @@ func (c *Client) MarkRead(ctx context.Context, r helper.ReadMark) error {
 	for sender, ids := range bySender {
 		if err := c.wa.MarkRead(ctx, ids, at, chat, sender); err != nil {
 			c.log.Error().Err(err).Msg("Could not send read receipts")
+			c.putBackUnread(r.ConversationID, read)
 			return errNotReady
 		}
 	}

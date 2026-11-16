@@ -385,6 +385,12 @@ func (c *Client) readUpTo(ctx context.Context, conversationID string, at time.Ti
 	return read
 }
 
+func (c *Client) putBackUnread(conversationID string, read []pendingRead) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unread[conversationID] = append(read, c.unread[conversationID]...)
+}
+
 func (c *Client) rememberUnread(conversationID string, info types.MessageInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
