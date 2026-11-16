@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -48,5 +49,34 @@ func TestAFailedGroupLoadIsTriedAgainLater(t *testing.T) {
 
 	if err == nil || again != nil || info == nil {
 		t.Fatalf("first err %v, then %v %v", err, info, again)
+	}
+}
+
+func TestAGroupThePersonLeftIsForgottenAndAFailedLookupKeepsWhatWasKnown(t *testing.T) {
+	ctx := context.Background()
+	other := types.NewJID("120363000000000009", types.GroupServer)
+	book := newGroupBook(
+		func(context.Context) ([]*types.GroupInfo, error) {
+			return []*types.GroupInfo{{JID: bookClub}, {JID: other}}, nil
+		},
+		func(_ context.Context, group types.JID) (*types.GroupInfo, error) {
+			if group == bookClub {
+				return nil, whatsmeow.ErrNotInGroup
+			}
+			return nil, errors.New("timed out")
+		},
+	)
+	book.get(ctx, bookClub)
+	book.changed(bookClub)
+	book.changed(other)
+
+	left, leftErr := book.get(ctx, bookClub)
+	kept, keptErr := book.get(ctx, other)
+
+	if left != nil || leftErr != nil || kept == nil || keptErr != nil {
+		t.Fatalf("left %v %v, kept %v %v", left, leftErr, kept, keptErr)
+	}
+	if _, known := book.known(bookClub); !known {
+		t.Fatal("a group the person left is looked up again")
 	}
 }

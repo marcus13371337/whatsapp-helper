@@ -2,9 +2,11 @@ package wa
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -48,11 +50,16 @@ func (b *groupBook) get(ctx context.Context, group types.JID) (*types.GroupInfo,
 	}
 	if b.stale[group] {
 		info, err := b.fetchOne(ctx, group)
-		if err != nil {
-			return nil, err
+		switch {
+		case errors.Is(err, whatsmeow.ErrNotInGroup), errors.Is(err, whatsmeow.ErrGroupNotFound):
+			delete(b.groups, group)
+			delete(b.stale, group)
+		case err != nil:
+			return b.groups[group], nil
+		default:
+			b.groups[group] = info
+			delete(b.stale, group)
 		}
-		b.groups[group] = info
-		delete(b.stale, group)
 	}
 	return b.groups[group], nil
 }
