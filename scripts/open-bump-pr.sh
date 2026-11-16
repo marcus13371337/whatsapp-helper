@@ -23,6 +23,7 @@ if [ -n "$pr" ]; then
     exit 0
   fi
   if gh pr view "${pr%% *}" --json commits --jq '.commits[].authors[].email' | grep -qvxF "$bot_email"; then
+    if gh pr view "${pr%% *}" --json comments --jq '.comments[].body' | grep -qF "$version"; then exit 0; fi
     gh pr comment "${pr%% *}" --body "whatsmeow has a newer commit, $version. This PR has commits pushed by hand, so the bump leaves its branch alone: merge or close it, and the next run bumps again."
     exit 0
   fi
