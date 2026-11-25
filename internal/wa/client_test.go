@@ -349,7 +349,7 @@ func TestBeingToldTheNetworkIsBackTriesAtOnce(t *testing.T) {
 	waitForState(t, h, "offline")
 	n.unblock()
 
-	c.Online()
+	c.NetworkBack()
 
 	waitForState(t, h, "connected")
 }
@@ -362,7 +362,7 @@ func TestBeingToldTheNetworkIsBackWhileConnectedChangesNothing(t *testing.T) {
 	waitForState(t, h, "connected")
 	<-n.attempt
 
-	c.Online()
+	c.NetworkBack()
 
 	time.Sleep(20 * time.Millisecond)
 	if len(n.attempt) != 0 || len(statesOf(h)) != 0 {
@@ -387,4 +387,124 @@ func TestADroppedConnectionThatCannotReachWhatsAppAgainIsOfflineUntilTheNetworkI
 	}
 	n.unblock()
 	waitForState(t, h, "connected")
+}
+
+type scriptedNetwork struct {
+	tries chan chan error
+}
+
+func scripted(c *Client) *scriptedNetwork {
+	n := &scriptedNetwork{tries: make(chan chan error)}
+	c.reconnect = func(ctx context.Context) error {
+		answer := make(chan error)
+		select {
+		case n.tries <- answer:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return <-answer
+	}
+	return n
+}
+
+func (n *scriptedNetwork) next(t *testing.T) chan error {
+	t.Helper()
+	select {
+	case answer := <-n.tries:
+		return answer
+	case <-time.After(5 * time.Second):
+		t.Fatal("no connection attempt")
+	}
+	return nil
+}
+
+func (n *scriptedNetwork) none(t *testing.T) {
+	t.Helper()
+	select {
+	case answer := <-n.tries:
+		answer <- errors.New("unexpected")
+		t.Fatal("tried to connect")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func retryEnded(t *testing.T, c *Client) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		c.mu.Lock()
+		retrying := c.retrying
+		c.mu.Unlock()
+		if !retrying {
+			return
+		}
+	}
+	t.Fatal("retry never ended")
+}
+
+func TestAFailureWhileARetryGetsThroughIsStillRetried(t *testing.T) {
+	c, _ := openTestClient(t, "")
+	c.firstRetry = time.Millisecond
+	n := scripted(c)
+	go c.logIn(context.Background())
+	n.next(t) <- errors.New("network is unreachable")
+	getsThrough := n.next(t)
+
+	c.wa.AutoReconnectHook(errors.New("network is unreachable"))
+	getsThrough <- nil
+
+	n.next(t) <- nil
+}
+
+func TestBeingToldTheNetworkIsBackDuringARetryThatGetsThroughDoesNotRushTheNextOutage(t *testing.T) {
+	c, _ := openTestClient(t, "")
+	c.firstRetry = time.Hour
+	n := scripted(c)
+	go c.logIn(context.Background())
+	n.next(t) <- errors.New("network is unreachable")
+	c.NetworkBack()
+	getsThrough := n.next(t)
+	c.NetworkBack()
+	getsThrough <- nil
+	for quiet := false; !quiet; {
+		select {
+		case answer := <-n.tries:
+			answer <- nil
+		case <-time.After(50 * time.Millisecond):
+			quiet = true
+		}
+	}
+	retryEnded(t, c)
+
+	c.wa.AutoReconnectHook(errors.New("network is unreachable"))
+
+	n.none(t)
+}
+
+func TestAFirstConnectWithNoAnswerIsOfflineAndTriedAgain(t *testing.T) {
+	c, h := openTestClient(t, "")
+	c.firstRetry = time.Millisecond
+	c.connectWait = time.Millisecond
+	n := scripted(c)
+	go c.logIn(context.Background())
+	n.next(t) <- nil
+
+	waitForState(t, h, "offline")
+
+	n.next(t) <- nil
+}
+
+func TestALoginGivenUpWhileDiallingIsNotOffline(t *testing.T) {
+	c, h := openTestClient(t, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.reconnect = func(ctx context.Context) error { return ctx.Err() }
+
+	err := c.logIn(ctx)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("login answered %v", err)
+	}
+	if states := statesOf(h); len(states) != 1 || states[0] != "connecting" {
+		t.Fatalf("states %v", states)
+	}
 }

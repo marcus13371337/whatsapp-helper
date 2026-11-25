@@ -49,6 +49,7 @@ type Client struct {
 
 	reconnect   func(ctx context.Context) error
 	firstRetry  time.Duration
+	connectWait time.Duration
 	networkBack chan struct{}
 
 	ctx    context.Context
@@ -63,6 +64,7 @@ type Client struct {
 	ended        bool
 	stopped      bool
 	retrying     bool
+	retryAgain   bool
 	firstOutcome chan *helper.State
 
 	sessionMu   sync.Mutex
@@ -109,6 +111,7 @@ func newClient(ctx context.Context, log zerolog.Logger, state string, emit func(
 		unread:       newPendingReads(),
 		lastChanges:  -1,
 		firstRetry:   firstRetry,
+		connectWait:  connectWait,
 		networkBack:  make(chan struct{}, 1),
 	}
 	c.people = &people{device: device, idx: idx}
@@ -157,6 +160,9 @@ func (c *Client) logIn(ctx context.Context) error {
 	}
 	c.publish(helper.State{State: helper.StateConnecting})
 	if err := c.reconnect(ctx); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		c.unreachable(err)
 		return nil
 	}
@@ -166,7 +172,8 @@ func (c *Client) logIn(ctx context.Context) error {
 			return helper.Errorf(ended.Code, "%s", ended.Message)
 		}
 		return nil
-	case <-time.After(connectWait):
+	case <-time.After(c.connectWait):
+		c.wa.Disconnect()
 		c.unreachable(errors.New("no answer from WhatsApp"))
 		return nil
 	case <-ctx.Done():
@@ -307,38 +314,58 @@ func (c *Client) unreachable(err error) {
 
 func (c *Client) retryLater() {
 	c.mu.Lock()
-	if c.retrying || c.stopped || c.ended {
-		c.mu.Unlock()
+	defer c.mu.Unlock()
+	if c.stopped || c.ended {
+		return
+	}
+	if c.retrying {
+		c.retryAgain = true
 		return
 	}
 	c.retrying = true
-	c.background.Go(func() {
-		defer func() {
-			c.mu.Lock()
-			c.retrying = false
-			c.mu.Unlock()
-		}()
-		for wait := c.firstRetry; ; {
-			select {
-			case <-time.After(wait):
-				wait = min(wait*2, maxRetry)
-			case <-c.networkBack:
-				wait = c.firstRetry
-			case <-c.ctx.Done():
-				return
-			}
-			err := c.reconnect(c.ctx)
-			if err == nil || errors.Is(err, whatsmeow.ErrAlreadyConnected) {
-				return
-			}
-			c.log.Warn().Err(err).Msg("Could not reconnect to WhatsApp")
-			c.publish(stateOffline)
-		}
-	})
-	c.mu.Unlock()
+	c.background.Go(c.retry)
 }
 
-func (c *Client) Online() {
+func (c *Client) retry() {
+	for wait := c.firstRetry; ; {
+		select {
+		case <-time.After(wait):
+			wait = min(wait*2, maxRetry)
+		case <-c.networkBack:
+			wait = c.firstRetry
+		case <-c.ctx.Done():
+			return
+		}
+		c.mu.Lock()
+		c.retryAgain = false
+		c.mu.Unlock()
+		err := c.reconnect(c.ctx)
+		if err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+			c.log.Warn().Err(err).Msg("Could not reconnect to WhatsApp")
+			c.publish(stateOffline)
+			continue
+		}
+		if c.retryDone() {
+			return
+		}
+	}
+}
+
+func (c *Client) retryDone() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.retryAgain {
+		return false
+	}
+	c.retrying = false
+	select {
+	case <-c.networkBack:
+	default:
+	}
+	return true
+}
+
+func (c *Client) NetworkBack() {
 	c.mu.Lock()
 	connected := c.published.State == helper.StateConnected
 	c.mu.Unlock()

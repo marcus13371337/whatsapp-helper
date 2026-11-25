@@ -91,7 +91,7 @@ func (f *fakeWhatsApp) connect(ctx context.Context, login helper.Login, emit fun
 	return f, nil
 }
 
-func (f *fakeWhatsApp) Online() {
+func (f *fakeWhatsApp) NetworkBack() {
 	f.mu.Lock()
 	wasOffline := f.offline
 	f.offline = false

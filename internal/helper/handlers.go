@@ -34,7 +34,7 @@ type handler struct {
 var handlers map[string]handler
 
 var notifications = map[string]func(WhatsApp){
-	"online": WhatsApp.Online,
+	"online": WhatsApp.NetworkBack,
 }
 
 func init() {
