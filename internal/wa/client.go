@@ -47,8 +47,9 @@ type Client struct {
 	wa     *whatsmeow.Client
 	now    func() time.Time
 
-	reconnect  func(ctx context.Context) error
-	firstRetry time.Duration
+	reconnect   func(ctx context.Context) error
+	firstRetry  time.Duration
+	networkBack chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -108,6 +109,7 @@ func newClient(ctx context.Context, log zerolog.Logger, state string, emit func(
 		unread:       newPendingReads(),
 		lastChanges:  -1,
 		firstRetry:   firstRetry,
+		networkBack:  make(chan struct{}, 1),
 	}
 	c.people = &people{device: device, idx: idx}
 	c.inbox = &inbox{people: c.people, self: c.selfJID}
@@ -115,6 +117,10 @@ func newClient(ctx context.Context, log zerolog.Logger, state string, emit func(
 	c.wa = whatsmeow.NewClient(device, waLog.Zerolog(log.With().Str("component", "whatsmeow").Logger().Level(zerolog.WarnLevel)))
 	c.wa.AddEventHandler(c.handle)
 	c.reconnect = c.wa.ConnectContext
+	c.wa.AutoReconnectHook = func(err error) bool {
+		c.unreachable(err)
+		return false
+	}
 	c.groups = newGroupBook(c.wa.GetJoinedGroups, func(ctx context.Context, group types.JID) (*types.GroupInfo, error) {
 		return c.wa.GetGroupInfo(ctx, group)
 	})
@@ -312,9 +318,12 @@ func (c *Client) retryLater() {
 			c.retrying = false
 			c.mu.Unlock()
 		}()
-		for wait := c.firstRetry; ; wait = min(wait*2, maxRetry) {
+		for wait := c.firstRetry; ; {
 			select {
 			case <-time.After(wait):
+				wait = min(wait*2, maxRetry)
+			case <-c.networkBack:
+				wait = c.firstRetry
 			case <-c.ctx.Done():
 				return
 			}
@@ -327,6 +336,20 @@ func (c *Client) retryLater() {
 		}
 	})
 	c.mu.Unlock()
+}
+
+func (c *Client) Online() {
+	c.mu.Lock()
+	connected := c.published.State == helper.StateConnected
+	c.mu.Unlock()
+	if connected {
+		return
+	}
+	c.retryLater()
+	select {
+	case c.networkBack <- struct{}{}:
+	default:
+	}
 }
 
 func (c *Client) received(ctx context.Context, evt *events.Message, history bool) {

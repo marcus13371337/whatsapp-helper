@@ -56,6 +56,7 @@ func openTestClient(t *testing.T, state string) (*Client, *heard) {
 		linkTestDevice(t, c.device)
 	}
 	c.now = func() time.Time { return testEpoch }
+	c.reconnect = func(context.Context) error { return errors.New("tests never reach WhatsApp") }
 	t.Cleanup(func() { c.Close(context.Background()) })
 	return c, h
 }
@@ -334,6 +335,54 @@ func TestASavedLoginStartedWithoutNetworkIsOfflineAndConnectsOnceTheNetworkIsBac
 		t.Fatalf("login failed: %v", err)
 	}
 	if states := waitForState(t, h, "offline"); states[0] != "connecting" {
+		t.Fatalf("states %v", states)
+	}
+	n.unblock()
+	waitForState(t, h, "connected")
+}
+
+func TestBeingToldTheNetworkIsBackTriesAtOnce(t *testing.T) {
+	c, h := openTestClient(t, "")
+	c.firstRetry = time.Hour
+	n := blockedNetwork(c)
+	c.logIn(context.Background())
+	waitForState(t, h, "offline")
+	n.unblock()
+
+	c.Online()
+
+	waitForState(t, h, "connected")
+}
+
+func TestBeingToldTheNetworkIsBackWhileConnectedChangesNothing(t *testing.T) {
+	c, h := openTestClient(t, "")
+	n := blockedNetwork(c)
+	n.unblock()
+	c.logIn(context.Background())
+	waitForState(t, h, "connected")
+	<-n.attempt
+
+	c.Online()
+
+	time.Sleep(20 * time.Millisecond)
+	if len(n.attempt) != 0 || len(statesOf(h)) != 0 {
+		t.Fatalf("tried again while connected")
+	}
+}
+
+func TestADroppedConnectionThatCannotReachWhatsAppAgainIsOfflineUntilTheNetworkIsBack(t *testing.T) {
+	c, h := openTestClient(t, "")
+	c.firstRetry = time.Millisecond
+	n := blockedNetwork(c)
+	c.handle(&events.Connected{})
+	c.handle(&events.Disconnected{})
+
+	keepsTrying := c.wa.AutoReconnectHook(errors.New("dial tcp: network is unreachable"))
+
+	if keepsTrying {
+		t.Fatal("whatsmeow kept its own retry loop")
+	}
+	if states := waitForState(t, h, "offline"); states[len(states)-2] != "reconnecting" {
 		t.Fatalf("states %v", states)
 	}
 	n.unblock()
