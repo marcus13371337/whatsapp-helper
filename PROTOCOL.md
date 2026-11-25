@@ -52,8 +52,9 @@ The helper is a child process. The app that starts it writes requests to the hel
 1. The app starts the helper with the helper's folder as its working directory. No secrets go in arguments or environment variables.
 2. The app sends `hello`, then `login` with the session it stored, or, the first time, with a way to link.
 3. The helper sends `state` on every connection change and `session` whenever the session changed. The app stores the newest `session` and discards older ones.
-4. To stop, the app closes the helper's stdin. The helper disconnects, sends a final `session`, and exits with code 0. SIGTERM does the same. A link that is still waiting for the phone is given up.
-5. After a crash or a stop the app starts the helper again and repeats step 2 with the stored session. Given the session, the helper needs nothing else from the previous run.
+4. The app may send the notification `{"jsonrpc":"2.0","method":"online"}` when the network is back or the computer woke up. The helper answers nothing. While it is not connected, it tries at once and starts its waits between tries from the shortest again; otherwise it ignores it.
+5. To stop, the app closes the helper's stdin. The helper disconnects, sends a final `session`, and exits with code 0. SIGTERM does the same. A link that is still waiting for the phone is given up.
+6. After a crash or a stop the app starts the helper again and repeats step 2 with the stored session. Given the session, the helper needs nothing else from the previous run.
 
 The helper writes only inside its folder. It never reads the OS keychain.
 
@@ -75,7 +76,7 @@ Must be the first request.
 - Params: `session`, as described under [Session](#session); or, to link a new device, `pair` and optionally `device_name`.
 - Result: `user` (`id`, `name`, `phone`): the account that is linked.
 
-With `session`, `login` answers once WhatsApp accepted the device. The connection then comes up in the background: wait for `state` `connected` before expecting live events. If both `session` and `pair` are given, the session is used.
+With `session`, `login` answers once WhatsApp accepted the device, or once the helper found it can't reach WhatsApp: then it sends `state` `offline`, keeps the session and connects when the network is back. The connection comes up in the background: wait for `state` `connected` before expecting live events. If both `session` and `pair` are given, the session is used.
 
 **Differs from Messenger:** there are no cookies. A person links the helper the way they link WhatsApp on a computer, and the app chooses how:
 
@@ -204,6 +205,7 @@ The helper downloads and decrypts the attachment into a new file in its folder. 
 | `connecting` | First connection after `login`. |
 | `connected` | Live. With `code` `too_large`, the session outgrew one line and could not be handed over. |
 | `reconnecting` | The connection dropped; the helper is retrying on its own. |
+| `offline` | The helper tried and could not reach WhatsApp. It keeps the session and tries again on its own, waiting longer between tries, and at once on `online`. Requests that need WhatsApp answer `not_connected` meanwhile. |
 | `logged_out` | The link ended, or `logout` finished. |
 
 `logged_out` is final for that login: the helper stops retrying, sends one last `session`, and answers `not_logged_in` until the next `login`. Its `code` says why:
@@ -218,7 +220,7 @@ The helper downloads and decrypts the attachment into a new file in its folder. 
 | `replaced` | Another program connected with the same session. | Keep the session; close the other program, then log in again. |
 | `client_outdated` | WhatsApp no longer accepts this helper version. | Keep the session; update the helper, then log in again. |
 
-**Differs from Messenger:** `needs_person` does not exist, and `logged_out` carries these codes. WhatsApp reports a link that expired because the phone was offline too long the same way as a device removed on the phone, so both are `unlinked`; there is no separate code for expiry. WhatsApp gives no early sign that the phone has been offline for long, so there is no warning before the link ends.
+**Differs from Messenger:** `offline` and the app's `online` notification are new; an app may ignore both. `needs_person` does not exist, and `logged_out` carries these codes. WhatsApp reports a link that expired because the phone was offline too long the same way as a device removed on the phone, so both are `unlinked`; there is no separate code for expiry. WhatsApp gives no early sign that the phone has been offline for long, so there is no warning before the link ends.
 
 Not in version 1: edits, deleted messages, polls, view-once, calls, status updates, starting a new conversation, typing, and presence from the helper's side.
 
