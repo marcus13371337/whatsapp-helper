@@ -192,6 +192,7 @@ type WhatsApp interface {
 	React(ctx context.Context, r OutgoingReaction) error
 	MarkRead(ctx context.Context, r ReadMark) error
 	Download(ctx context.Context, ref string, into io.Writer) (Downloaded, error)
+	Online()
 	Logout(ctx context.Context) error
 	Close(ctx context.Context) error
 }

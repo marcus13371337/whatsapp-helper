@@ -306,3 +306,32 @@ func TestWhenWhatsAppEndsTheLinkTheAppHearsWhyAndCanLogInAgain(t *testing.T) {
 	a.ok("login", map[string]any{"session": validSession()})
 	a.ok("conversations", nil)
 }
+
+func TestALoginThatCannotReachWhatsAppStaysLoggedInAndConnectsWhenToldTheNetworkIsBack(t *testing.T) {
+	a := startHelper(t)
+	a.whatsapp.offline = true
+
+	got := a.login()
+
+	if got["user"].(map[string]any)["id"] != fakeUserID {
+		t.Fatalf("login answered %v", got)
+	}
+	a.event("state")
+	if offline := a.event("state"); offline["state"] != "offline" {
+		t.Fatalf("state %v", offline)
+	}
+	a.writeLine(`{"jsonrpc":"2.0","method":"online"}`)
+	if back := a.event("state"); back["state"] != "connected" {
+		t.Fatalf("state %v", back)
+	}
+	a.ok("conversations", nil)
+}
+
+func TestBeingToldTheNetworkIsBackBeforeLoginIsIgnored(t *testing.T) {
+	a := startHelper(t)
+	a.hello()
+
+	a.writeLine(`{"jsonrpc":"2.0","method":"online"}`)
+
+	a.ok("ping", nil)
+}

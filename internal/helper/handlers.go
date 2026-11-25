@@ -33,6 +33,10 @@ type handler struct {
 
 var handlers map[string]handler
 
+var notifications = map[string]func(WhatsApp){
+	"online": WhatsApp.Online,
+}
+
 func init() {
 	handlers = map[string]handler{
 		"hello": {fn: hello, serial: true},

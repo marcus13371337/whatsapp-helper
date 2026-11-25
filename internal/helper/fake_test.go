@@ -50,6 +50,7 @@ type fakeWhatsApp struct {
 	failAfterSend bool
 	loggedOut     bool
 	closed        bool
+	offline       bool
 }
 
 func newFakeWhatsApp() *fakeWhatsApp {
@@ -81,9 +82,24 @@ func (f *fakeWhatsApp) connect(ctx context.Context, login helper.Login, emit fun
 	f.emit = emit
 	f.loggedOut, f.closed = false, false
 	emit(helper.StateEvent(helper.State{State: helper.StateConnecting}))
+	if f.offline {
+		emit(helper.StateEvent(helper.State{State: helper.StateOffline}))
+		return f, nil
+	}
 	emit(helper.StateEvent(helper.State{State: helper.StateConnected}))
 	emit(helper.SessionEvent(f.refreshedSession("after-connect")))
 	return f, nil
+}
+
+func (f *fakeWhatsApp) Online() {
+	f.mu.Lock()
+	wasOffline := f.offline
+	f.offline = false
+	emit := f.emit
+	f.mu.Unlock()
+	if wasOffline {
+		emit(helper.StateEvent(helper.State{State: helper.StateConnected}))
+	}
 }
 
 func (f *fakeWhatsApp) link(ctx context.Context, pair helper.Pair, outcome pairOutcome, emit func(helper.Event)) error {
