@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -32,6 +33,8 @@ var (
 	errUnreachable = helper.Errorf(helper.CodeNotConnected, "WhatsApp could not be reached. Check the internet connection and try again.")
 	errNotReady    = helper.Errorf(helper.CodeNotConnected, "The helper is not connected to WhatsApp right now. Try again in a moment.")
 )
+
+var stateOffline = helper.State{State: helper.StateOffline, Message: "WhatsApp can't be reached right now. The helper keeps trying and connects by itself once the network is back."}
 
 type Client struct {
 	log    zerolog.Logger
@@ -147,9 +150,9 @@ func (c *Client) logIn(ctx context.Context) error {
 		return errNotLinked
 	}
 	c.publish(helper.State{State: helper.StateConnecting})
-	if err := c.wa.ConnectContext(ctx); err != nil {
-		c.log.Error().Err(err).Msg("Could not connect to WhatsApp")
-		return errUnreachable
+	if err := c.reconnect(ctx); err != nil {
+		c.unreachable(err)
+		return nil
 	}
 	select {
 	case ended := <-c.firstOutcome:
@@ -158,7 +161,8 @@ func (c *Client) logIn(ctx context.Context) error {
 		}
 		return nil
 	case <-time.After(connectWait):
-		return errUnreachable
+		c.unreachable(errors.New("no answer from WhatsApp"))
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -289,6 +293,12 @@ func (c *Client) spawn(work func()) bool {
 	return true
 }
 
+func (c *Client) unreachable(err error) {
+	c.log.Warn().Err(err).Msg("Could not reach WhatsApp, trying again later")
+	c.publish(stateOffline)
+	c.retryLater()
+}
+
 func (c *Client) retryLater() {
 	c.mu.Lock()
 	if c.retrying || c.stopped || c.ended {
@@ -309,10 +319,11 @@ func (c *Client) retryLater() {
 				return
 			}
 			err := c.reconnect(c.ctx)
-			if err == nil {
+			if err == nil || errors.Is(err, whatsmeow.ErrAlreadyConnected) {
 				return
 			}
 			c.log.Warn().Err(err).Msg("Could not reconnect to WhatsApp")
+			c.publish(stateOffline)
 		}
 	})
 	c.mu.Unlock()

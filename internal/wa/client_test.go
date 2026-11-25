@@ -268,3 +268,74 @@ func TestAnyChangeToTheStoreIsHandedBackEvenWithoutAnEvent(t *testing.T) {
 		t.Fatalf("quiet %d", len(quiet))
 	}
 }
+
+type network struct {
+	mu      sync.Mutex
+	up      bool
+	client  *Client
+	attempt chan struct{}
+}
+
+func blockedNetwork(c *Client) *network {
+	n := &network{client: c, attempt: make(chan struct{}, 100)}
+	c.reconnect = n.connect
+	return n
+}
+
+func (n *network) connect(context.Context) error {
+	n.mu.Lock()
+	up := n.up
+	n.mu.Unlock()
+	n.attempt <- struct{}{}
+	if !up {
+		return errors.New("dial tcp: network is unreachable")
+	}
+	go n.client.handle(&events.Connected{})
+	return nil
+}
+
+func (n *network) unblock() {
+	n.mu.Lock()
+	n.up = true
+	n.mu.Unlock()
+}
+
+func statesOf(h *heard) []string {
+	var states []string
+	for _, evt := range h.take("state") {
+		states = append(states, evt.Params.(helper.State).State)
+	}
+	return states
+}
+
+func waitForState(t *testing.T, h *heard, want string) []string {
+	t.Helper()
+	var seen []string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		seen = append(seen, statesOf(h)...)
+		if len(seen) > 0 && seen[len(seen)-1] == want {
+			return seen
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("states %v, never %s", seen, want)
+	return nil
+}
+
+func TestASavedLoginStartedWithoutNetworkIsOfflineAndConnectsOnceTheNetworkIsBack(t *testing.T) {
+	c, h := openTestClient(t, "")
+	c.firstRetry = time.Millisecond
+	n := blockedNetwork(c)
+
+	err := c.logIn(context.Background())
+
+	if err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	if states := waitForState(t, h, "offline"); states[0] != "connecting" {
+		t.Fatalf("states %v", states)
+	}
+	n.unblock()
+	waitForState(t, h, "connected")
+}

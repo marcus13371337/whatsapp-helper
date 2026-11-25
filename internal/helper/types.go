@@ -126,6 +126,7 @@ const (
 	StateConnecting   = "connecting"
 	StateConnected    = "connected"
 	StateReconnecting = "reconnecting"
+	StateOffline      = "offline"
 	StateLoggedOut    = "logged_out"
 )
 
