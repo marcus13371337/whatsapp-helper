@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ var (
 	errNotReady    = helper.Errorf(helper.CodeNotConnected, "The helper is not connected to WhatsApp right now. Try again in a moment.")
 )
 
+var stateOffline = helper.State{State: helper.StateOffline, Message: "WhatsApp can't be reached right now. The helper keeps trying and connects by itself once the network is back."}
+
 type Client struct {
 	log    zerolog.Logger
 	emit   func(helper.Event)
@@ -44,8 +47,10 @@ type Client struct {
 	wa     *whatsmeow.Client
 	now    func() time.Time
 
-	reconnect  func(ctx context.Context) error
-	firstRetry time.Duration
+	reconnect   func(ctx context.Context) error
+	firstRetry  time.Duration
+	connectWait time.Duration
+	networkBack chan struct{}
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -59,6 +64,7 @@ type Client struct {
 	ended        bool
 	stopped      bool
 	retrying     bool
+	retryAgain   bool
 	firstOutcome chan *helper.State
 
 	sessionMu   sync.Mutex
@@ -105,6 +111,8 @@ func newClient(ctx context.Context, log zerolog.Logger, state string, emit func(
 		unread:       newPendingReads(),
 		lastChanges:  -1,
 		firstRetry:   firstRetry,
+		connectWait:  connectWait,
+		networkBack:  make(chan struct{}, 1),
 	}
 	c.people = &people{device: device, idx: idx}
 	c.inbox = &inbox{people: c.people, self: c.selfJID}
@@ -112,6 +120,10 @@ func newClient(ctx context.Context, log zerolog.Logger, state string, emit func(
 	c.wa = whatsmeow.NewClient(device, waLog.Zerolog(log.With().Str("component", "whatsmeow").Logger().Level(zerolog.WarnLevel)))
 	c.wa.AddEventHandler(c.handle)
 	c.reconnect = c.wa.ConnectContext
+	c.wa.AutoReconnectHook = func(err error) bool {
+		c.unreachable(err)
+		return false
+	}
 	c.groups = newGroupBook(c.wa.GetJoinedGroups, func(ctx context.Context, group types.JID) (*types.GroupInfo, error) {
 		return c.wa.GetGroupInfo(ctx, group)
 	})
@@ -147,9 +159,12 @@ func (c *Client) logIn(ctx context.Context) error {
 		return errNotLinked
 	}
 	c.publish(helper.State{State: helper.StateConnecting})
-	if err := c.wa.ConnectContext(ctx); err != nil {
-		c.log.Error().Err(err).Msg("Could not connect to WhatsApp")
-		return errUnreachable
+	if err := c.reconnect(ctx); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		c.unreachable(err)
+		return nil
 	}
 	select {
 	case ended := <-c.firstOutcome:
@@ -157,8 +172,10 @@ func (c *Client) logIn(ctx context.Context) error {
 			return helper.Errorf(ended.Code, "%s", ended.Message)
 		}
 		return nil
-	case <-time.After(connectWait):
-		return errUnreachable
+	case <-time.After(c.connectWait):
+		c.wa.Disconnect()
+		c.unreachable(errors.New("no answer from WhatsApp"))
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -289,33 +306,77 @@ func (c *Client) spawn(work func()) bool {
 	return true
 }
 
+func (c *Client) unreachable(err error) {
+	c.log.Warn().Err(err).Msg("Could not reach WhatsApp, trying again later")
+	c.publish(stateOffline)
+	c.retryLater()
+}
+
 func (c *Client) retryLater() {
 	c.mu.Lock()
-	if c.retrying || c.stopped || c.ended {
-		c.mu.Unlock()
+	defer c.mu.Unlock()
+	if c.stopped || c.ended {
+		return
+	}
+	if c.retrying {
+		c.retryAgain = true
 		return
 	}
 	c.retrying = true
-	c.background.Go(func() {
-		defer func() {
-			c.mu.Lock()
-			c.retrying = false
-			c.mu.Unlock()
-		}()
-		for wait := c.firstRetry; ; wait = min(wait*2, maxRetry) {
-			select {
-			case <-time.After(wait):
-			case <-c.ctx.Done():
-				return
-			}
-			err := c.reconnect(c.ctx)
-			if err == nil {
-				return
-			}
-			c.log.Warn().Err(err).Msg("Could not reconnect to WhatsApp")
+	c.background.Go(c.retry)
+}
+
+func (c *Client) retry() {
+	for wait := c.firstRetry; ; {
+		select {
+		case <-time.After(wait):
+			wait = min(wait*2, maxRetry)
+		case <-c.networkBack:
+			wait = c.firstRetry
+		case <-c.ctx.Done():
+			return
 		}
-	})
+		c.mu.Lock()
+		c.retryAgain = false
+		c.mu.Unlock()
+		err := c.reconnect(c.ctx)
+		if err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+			c.log.Warn().Err(err).Msg("Could not reconnect to WhatsApp")
+			c.publish(stateOffline)
+			continue
+		}
+		if c.retryDone() {
+			return
+		}
+	}
+}
+
+func (c *Client) retryDone() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.retryAgain {
+		return false
+	}
+	c.retrying = false
+	select {
+	case <-c.networkBack:
+	default:
+	}
+	return true
+}
+
+func (c *Client) NetworkBack() {
+	c.mu.Lock()
+	connected := c.published.State == helper.StateConnected
 	c.mu.Unlock()
+	if connected {
+		return
+	}
+	c.retryLater()
+	select {
+	case c.networkBack <- struct{}{}:
+	default:
+	}
 }
 
 func (c *Client) received(ctx context.Context, evt *events.Message, history bool) {

@@ -126,6 +126,7 @@ const (
 	StateConnecting   = "connecting"
 	StateConnected    = "connected"
 	StateReconnecting = "reconnecting"
+	StateOffline      = "offline"
 	StateLoggedOut    = "logged_out"
 )
 
@@ -191,6 +192,7 @@ type WhatsApp interface {
 	React(ctx context.Context, r OutgoingReaction) error
 	MarkRead(ctx context.Context, r ReadMark) error
 	Download(ctx context.Context, ref string, into io.Writer) (Downloaded, error)
+	NetworkBack()
 	Logout(ctx context.Context) error
 	Close(ctx context.Context) error
 }

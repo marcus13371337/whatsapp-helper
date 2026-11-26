@@ -109,6 +109,7 @@ func (s *server) handleLine(ctx context.Context, l readLine) {
 		return
 	}
 	if len(req.ID) == 0 {
+		s.notified(req.Method)
 		return
 	}
 	handler, ok := handlers[req.Method]
@@ -142,6 +143,14 @@ func (s *server) handleLine(ctx context.Context, l readLine) {
 		return
 	}
 	s.lanes.run(handler.lane(req.Params), work)
+}
+
+func (s *server) notified(method string) {
+	react, known := notifications[method]
+	_, _, whatsapp := s.snapshot()
+	if known && whatsapp != nil {
+		react(whatsapp)
+	}
 }
 
 func (s *server) answer(id json.RawMessage, result any, err error) {
